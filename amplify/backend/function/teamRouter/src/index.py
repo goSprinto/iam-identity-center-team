@@ -39,6 +39,59 @@ team_config = {
     "fn_teamnotifications_arn": fn_teamnotifications_arn,
 }
 
+# Add helper function to get management account ID
+def get_mgmt_account_id():
+    org_client = boto3.client('organizations')
+    try:
+        response = org_client.describe_organization()
+        return response['Organization']['MasterAccountId']
+    except ClientError as e:
+        print(e.response['Error']['Message'])
+        return None
+
+# Add function to ensure permission set exists
+def ensure_permission_set_exists(roleId, accountId, roleName):
+    """
+    Ensures a permission set exists in the TEAM account and is provisioned to the target account.
+    If the permission set doesn't exist, it creates it.
+    """
+    client = boto3.client('sso-admin')
+    
+    try:
+        # Check if permission set exists
+        response = client.describe_permission_set(
+            InstanceArn=sso_instance['InstanceArn'],
+            PermissionSetArn=roleId
+        )
+        print(f"Permission set {roleId} already exists")
+        return roleId
+    except ClientError as e:
+        if e.response['Error']['Code'] == 'ResourceNotFoundException':
+            print(f"Permission set {roleId} not found, creating new one")
+            
+            # Create new permission set in TEAM account
+            create_response = client.create_permission_set(
+                InstanceArn=sso_instance['InstanceArn'],
+                Name=f"TEAM-{roleName}-{accountId}",
+                Description=f"Temporary elevated access for {roleName} in account {accountId}",
+                SessionDuration="PT1H"  # 1 hour default
+            )
+            
+            new_permission_set_arn = create_response['PermissionSet']['PermissionSetArn']
+            
+            # Provision the permission set to the target account
+            client.provision_permission_set(
+                InstanceArn=sso_instance['InstanceArn'],
+                PermissionSetArn=new_permission_set_arn,
+                TargetType='AWS_ACCOUNT',
+                TargetId=accountId
+            )
+            
+            print(f"Created and provisioned new permission set: {new_permission_set_arn}")
+            return new_permission_set_arn
+        else:
+            print(f"Error checking permission set: {e}")
+            raise e
 
 
 def list_account_for_ou(ouId):
@@ -320,6 +373,34 @@ def check_settings():
         
 def invoke_workflow(request, approval_required, notification_config, team_config):
     workflow = None
+    
+    # Add management account permission set handling
+    if request["accountId"] == get_mgmt_account_id():
+        print("Request is for management account, ensuring permission set exists")
+        try:
+            # Ensure permission set exists and is provisioned
+            new_role_id = ensure_permission_set_exists(
+                request["roleId"], 
+                request["accountId"], 
+                request["role"]
+            )
+            # Update the request with the new role ID if it changed
+            if new_role_id != request["roleId"]:
+                request["roleId"] = new_role_id
+                # Update the request in DynamoDB
+                updateRequest({
+                    'id': request["id"],
+                    'roleId': new_role_id
+                })
+        except Exception as e:
+            print(f"Error ensuring permission set exists: {e}")
+            # Set request to error status
+            updateRequest({
+                'id': request["id"],
+                'status': 'error'
+            })
+            return
+    
     if approval_required and request["status"] == "pending":
         print("sending approval")
         workflow = approval

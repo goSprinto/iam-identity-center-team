@@ -233,16 +233,17 @@ function Request(props) {
       setRoleError("Select a role");
       error = true;
     }
-    if (
-      params.DeploymentType == "delegated" &&
-      role &&
-      mgmtPs.permissions.includes(role.value)
-    ) {
-      setRoleError(
-        "Permission set is assigned to management account and cannot be requested"
-      );
-      error = true;
-    }
+    // This code is commented because we want to allow requests for management account permission sets
+    // if (
+    //   params.DeploymentType == "delegated" &&
+    //   role &&
+    //   mgmtPs.permissions.includes(role.value)
+    // ) {
+    //   setRoleError(
+    //     "Permission set is assigned to management account and cannot be requested"
+    //   );
+    //   error = true;
+    // }
     if (!account.label) {
       setAccountError("Select an account");
       error = true;
